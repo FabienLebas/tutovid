@@ -122,7 +122,7 @@ export default function SportPage() {
 
   return (
     <>
-      <style>{`
+      <style suppressHydrationWarning>{`
         @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;600&display=swap');
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
         :root {
