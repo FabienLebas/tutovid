@@ -161,7 +161,12 @@ def parse_iso_duration(duration: str) -> int:
 
 # ── Transcription ────────────────────────────────────────────────────────────
 
+class NoYouTubeTranscript(Exception):
+    pass
+
 def get_transcript(video_id: str, languages: list[str]) -> tuple[list[dict], str]:
+    """Lève NoYouTubeTranscript si aucun sous-titre YouTube et Whisper désactivé.
+    Les erreurs Whisper (ImportError, ffmpeg…) propagent librement → statut 'failed'."""
     try:
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
         for lang in languages:
@@ -181,11 +186,15 @@ def get_transcript(video_id: str, languages: list[str]) -> tuple[list[dict], str
                 ).translate(lang).fetch(), "youtube_auto"
             except Exception:
                 pass
-        raise NoTranscriptFound(video_id, languages, None)
     except (NoTranscriptFound, TranscriptsDisabled):
-        if os.getenv("USE_WHISPER_FALLBACK", "false").lower() == "true":
-            return transcribe_with_whisper(video_id), "whisper"
-        raise
+        pass
+
+    if os.getenv("USE_WHISPER_FALLBACK", "false").lower() == "true":
+        model = os.getenv("WHISPER_MODEL", "small")
+        click.echo(f"  🎙️  Whisper ({model}) — transcription locale de {video_id}…")
+        return transcribe_with_whisper(video_id), "whisper"
+
+    raise NoYouTubeTranscript(video_id)
 
 def transcribe_with_whisper(video_id: str) -> list[dict]:
     import yt_dlp
@@ -350,9 +359,10 @@ def process_video(sb, yt_client, openai_client, video, ch, sport_slug,
 
     try:
         segments, source = get_transcript(video["id"], languages)
-    except Exception:
+    except NoYouTubeTranscript:
         upsert_video(sb, ch["id"], sport_slug, video, "none", "unknown", "no_transcript")
         return "no_transcript"
+    # Les erreurs Whisper (ImportError, ffmpeg, etc.) propagent → statut 'failed' + message visible
 
     try:
         all_chunks = [make_title_chunk(video)] + \
