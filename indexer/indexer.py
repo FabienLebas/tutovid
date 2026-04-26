@@ -322,13 +322,13 @@ def get_videos_to_index(sb: Client, video_ids: list[str], force: bool) -> list[s
     if force:
         return video_ids
 
-    existing = {
-        r["id"]: r["index_status"]
-        for r in sb.table("videos")
-               .select("id, index_status")
-               .in_("id", video_ids)
-               .execute().data
-    }
+    # Requête par lots de 200 — évite les URLs trop longues (limite httpx)
+    existing = {}
+    for i in range(0, len(video_ids), 200):
+        batch = video_ids[i:i + 200]
+        rows = sb.table("videos").select("id, index_status").in_("id", batch).execute().data
+        for r in rows:
+            existing[r["id"]] = r["index_status"]
 
     to_skip    = {"indexed", "no_transcript"}
     to_process = []
