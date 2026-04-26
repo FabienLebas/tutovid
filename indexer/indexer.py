@@ -192,7 +192,15 @@ def get_transcript(video_id: str, languages: list[str]) -> tuple[list[dict], str
     if os.getenv("USE_WHISPER_FALLBACK", "false").lower() == "true":
         model = os.getenv("WHISPER_MODEL", "small")
         click.echo(f"  🎙️  Whisper ({model}) — transcription locale de {video_id}…")
-        return transcribe_with_whisper(video_id), "whisper"
+        try:
+            return transcribe_with_whisper(video_id), "whisper"
+        except Exception as e:
+            # Vidéo non disponible : première, live, privée, supprimée → pas la peine de réessayer
+            unavailable = ("Premieres in", "This live stream", "Private video",
+                           "Video unavailable", "members-only", "age-restricted")
+            if any(k in str(e) for k in unavailable):
+                raise NoYouTubeTranscript(video_id)
+            raise  # Vraie erreur Whisper/ffmpeg → statut 'failed', sera retentée
 
     raise NoYouTubeTranscript(video_id)
 
