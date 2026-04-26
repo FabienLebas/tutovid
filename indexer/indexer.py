@@ -338,7 +338,7 @@ def get_videos_to_index(sb: Client, video_ids: list[str], force: bool) -> list[s
         for r in rows:
             existing[r["id"]] = r["index_status"]
 
-    to_skip    = {"indexed", "no_transcript"}
+    to_skip    = {"indexed", "no_transcript", "filtered"}
     to_process = []
     resumed    = 0
 
@@ -382,6 +382,19 @@ def process_video(sb, yt_client, openai_client, video, ch, sport_slug,
     except Exception as e:
         upsert_video(sb, ch["id"], sport_slug, video, "error", "unknown", "failed")
         raise e
+
+# ── Filtrage hors-sujet ──────────────────────────────────────────────────────
+
+def _filter_reason(video: dict, max_duration: int, skip_keywords: list[str]) -> str | None:
+    """Retourne la raison d'exclusion, ou None si la vidéo est éligible."""
+    dur = video.get("duration_seconds") or 0
+    if max_duration > 0 and dur > max_duration:
+        return f"durée {dur // 60}min > limite {max_duration // 60}min"
+    title_lower = video["title"].lower()
+    for kw in skip_keywords:
+        if kw in title_lower:
+            return f"mot-clé '{kw}'"
+    return None
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -447,6 +460,8 @@ def index(sport: str, channel: str, index_all: bool,
     languages     = os.getenv("TRANSCRIPT_LANGUAGES", "fr,en").split(",")
     chunk_size    = int(os.getenv("CHUNK_SIZE_WORDS",    350))
     chunk_overlap = int(os.getenv("CHUNK_OVERLAP_WORDS",  50))
+    max_duration  = int(os.getenv("MAX_VIDEO_DURATION_SECONDS", 0))
+    skip_keywords = [k.strip().lower() for k in os.getenv("SKIP_TITLE_KEYWORDS", "").split(",") if k.strip()]
 
     if index_all:
         channels = sb.table("channels").select("*").execute().data
@@ -496,7 +511,21 @@ def index(sport: str, channel: str, index_all: bool,
             click.echo("  → Récupération des métadonnées...")
             videos = fetch_video_details(yt, video_ids)
 
-            stats = {"indexed": 0, "no_transcript": 0, "failed": 0}
+            # ── Filtrage hors-sujet (matchs, lives, trop longues) ─────────
+            if max_duration > 0 or skip_keywords:
+                filtered, eligible = [], []
+                for v in videos:
+                    reason = _filter_reason(v, max_duration, skip_keywords)
+                    if reason:
+                        upsert_video(sb, ch["id"], sport_slug, v, "filtered", "unknown", "filtered")
+                        filtered.append(reason)
+                    else:
+                        eligible.append(v)
+                if filtered:
+                    click.echo(f"  🚫 {len(filtered)} vidéos filtrées (hors-sujet)")
+                videos = eligible
+
+            stats = {"indexed": 0, "no_transcript": 0, "filtered": 0, "failed": 0}
 
             for video in tqdm(videos, desc="  Indexation", unit="vidéo"):
                 try:
@@ -515,10 +544,11 @@ def index(sport: str, channel: str, index_all: bool,
                     tqdm.write(f"\n  ℹ️  Batch de {batch} vidéos atteint — arrêt propre.")
                     break
 
-            remaining_count = len(video_ids) - stats["indexed"] - stats["no_transcript"] - stats["failed"]
+            remaining_count = len(video_ids) - sum(stats.values())
             click.echo(
                 f"\n  📊 ✅ {stats['indexed']} indexées | "
                 f"🔇 {stats['no_transcript']} sans transcript | "
+                f"🚫 {stats['filtered']} filtrées | "
                 f"❌ {stats['failed']} erreurs"
                 + (f" | ⏳ {remaining_count} restantes" if remaining_count > 0 else "")
             )
