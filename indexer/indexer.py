@@ -147,7 +147,7 @@ def fetch_video_details(yt, video_ids: list[str]) -> list[dict]:
                 "published_at": s["publishedAt"],
                 "thumbnail_url": (s["thumbnails"].get("high") or
                                   s["thumbnails"].get("default", {})).get("url"),
-                "duration_seconds": parse_iso_duration(item["contentDetails"]["duration"]),
+                "duration_seconds": parse_iso_duration(item["contentDetails"].get("duration", "PT0S")),
             })
     return results
 
