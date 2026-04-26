@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
   const query      = searchParams.get("q")?.trim();
   const sportSlug  = searchParams.get("sport") || null;
   const limit      = Math.min(parseInt(searchParams.get("limit") || "10"), 20);
-  const threshold  = parseFloat(searchParams.get("threshold") || "0.45");
+  const threshold  = parseFloat(searchParams.get("threshold") || "0.3");
 
   if (!query || query.length < 2) {
     return NextResponse.json({ error: "Requête trop courte" }, { status: 400 });
