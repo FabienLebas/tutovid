@@ -189,7 +189,8 @@ def get_transcript(video_id: str, languages: list[str]) -> tuple[list[dict], str
 
 def transcribe_with_whisper(video_id: str) -> list[dict]:
     import yt_dlp
-    openai_client = get_openai()
+    import whisper
+    model_name = os.getenv("WHISPER_MODEL", "small")
     with tempfile.TemporaryDirectory() as tmp:
         audio_path = Path(tmp) / "audio.mp3"
         yt_dlp.YoutubeDL({
@@ -198,14 +199,10 @@ def transcribe_with_whisper(video_id: str) -> list[dict]:
             "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3"}],
             "quiet": True,
         }).download([f"https://www.youtube.com/watch?v={video_id}"])
-        with open(audio_path, "rb") as f:
-            result = openai_client.audio.transcriptions.create(
-                model=os.getenv("WHISPER_MODEL", "whisper-1"),
-                file=f, response_format="verbose_json",
-                timestamp_granularities=["segment"]
-            )
-    return [{"text": seg.text, "start": seg.start, "duration": seg.end - seg.start}
-            for seg in result.segments]
+        model = whisper.load_model(model_name)
+        result = model.transcribe(str(audio_path), verbose=False)
+    return [{"text": seg["text"], "start": seg["start"], "duration": seg["end"] - seg["start"]}
+            for seg in result["segments"]]
 
 # ── Chunking ─────────────────────────────────────────────────────────────────
 
