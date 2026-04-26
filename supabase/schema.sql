@@ -84,6 +84,13 @@ CREATE INDEX IF NOT EXISTS chunks_embedding_idx
 CREATE INDEX IF NOT EXISTS chunks_sport_idx   ON chunks(sport_slug);
 CREATE INDEX IF NOT EXISTS chunks_video_idx   ON chunks(video_id);
 
+-- Supabase active RLS par défaut sur certains projets — on le désactive
+-- explicitement car l'accès est contrôlé par les clés API (anon vs service_role)
+ALTER TABLE sports   DISABLE ROW LEVEL SECURITY;
+ALTER TABLE channels DISABLE ROW LEVEL SECURITY;
+ALTER TABLE videos   DISABLE ROW LEVEL SECURITY;
+ALTER TABLE chunks   DISABLE ROW LEVEL SECURITY;
+
 -- ── FONCTION : recherche sémantique filtrée par sport ───────────
 -- Le paramètre p_sport_slug permet de restreindre la recherche
 -- à un seul sport. Si NULL → recherche globale (tous sports).
