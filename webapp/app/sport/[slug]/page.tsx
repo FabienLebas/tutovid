@@ -90,14 +90,19 @@ function ResultCard({ r, index }: { r: Result; index: number }) {
 }
 
 export default function SportPage() {
+  const ITEMS_PER_PAGE = 12;
   const { slug } = useParams<{ slug: string }>();
-  const [sport, setSport]     = useState<Sport | null>(null);
-  const [query, setQuery]     = useState("");
-  const [results, setResults] = useState<Result[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError]     = useState("");
-  const [searched, setSearched] = useState(false);
+  const [sport, setSport]           = useState<Sport | null>(null);
+  const [query, setQuery]           = useState("");
+  const [allResults, setAllResults] = useState<Result[]>([]);
+  const [page, setPage]             = useState(1);
+  const [loading, setLoading]       = useState(false);
+  const [error, setError]           = useState("");
+  const [searched, setSearched]     = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const totalPages = Math.ceil(allResults.length / ITEMS_PER_PAGE);
+  const results    = allResults.slice((page - 1) * ITEMS_PER_PAGE, page * ITEMS_PER_PAGE);
 
   useEffect(() => {
     fetch(`/api/sport/${slug}`)
@@ -108,12 +113,12 @@ export default function SportPage() {
 
   const search = useCallback(async (q: string) => {
     if (!q.trim() || q.trim().length < 2) return;
-    setLoading(true); setError(""); setResults([]); setSearched(true);
+    setLoading(true); setError(""); setAllResults([]); setPage(1); setSearched(true);
     try {
-      const resp = await fetch(`/api/search?q=${encodeURIComponent(q)}&sport=${slug}&limit=12`);
+      const resp = await fetch(`/api/search?q=${encodeURIComponent(q)}&sport=${slug}&limit=60`);
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || "Erreur serveur");
-      setResults(data.results || []);
+      setAllResults(data.results || []);
     } catch (e: any) { setError(e.message); }
     finally { setLoading(false); }
   }, [slug]);
@@ -264,6 +269,19 @@ export default function SportPage() {
         }
         @keyframes spin { to { transform: rotate(360deg); } }
 
+        .pagination {
+          display: flex; align-items: center; justify-content: center;
+          gap: 16px; margin-top: 40px;
+        }
+        .page-btn {
+          background: var(--ink); color: #fff; border: none;
+          padding: 10px 22px; border-radius: 50px; font-family: 'DM Sans', sans-serif;
+          font-size: .85rem; font-weight: 600; cursor: pointer; transition: background .18s;
+        }
+        .page-btn:hover:not(:disabled) { background: #1f2937; }
+        .page-btn:disabled { opacity: .3; cursor: default; }
+        .page-info { font-size: .85rem; font-weight: 600; color: var(--mid); min-width: 60px; text-align: center; }
+
         .footer { background: var(--ink); color: #4b5563; text-align: center; padding: 24px; font-size: .75rem; letter-spacing: .1em; text-transform: uppercase; }
 
         @media (max-width: 600px) {
@@ -334,7 +352,7 @@ export default function SportPage() {
           </div>
         )}
 
-        {!loading && !error && searched && results.length === 0 && (
+        {!loading && !error && searched && allResults.length === 0 && (
           <div className="state-box">
             <div className="state-icon">{sport?.emoji || "🎯"}</div>
             <h2>Aucun résultat</h2>
@@ -342,14 +360,28 @@ export default function SportPage() {
           </div>
         )}
 
-        {!loading && results.length > 0 && (
+        {!loading && allResults.length > 0 && (
           <>
             <p className="results-header">
-              <strong>{results.length} vidéos</strong> pour «&nbsp;{query}&nbsp;»
+              <strong>{allResults.length} meilleure{allResults.length > 1 ? "s" : ""} vidéo{allResults.length > 1 ? "s" : ""}</strong> pour «&nbsp;{query}&nbsp;»
+              {totalPages > 1 && <> — page <strong>{page}</strong> sur {totalPages}</>}
             </p>
             <div className="results-grid">
               {results.map((r, i) => <ResultCard key={r.videoId} r={r} index={i} />)}
             </div>
+            {totalPages > 1 && (
+              <div className="pagination">
+                <button className="page-btn" disabled={page === 1}
+                  onClick={() => { setPage(p => p - 1); document.querySelector(".results-section")?.scrollIntoView({ behavior: "smooth" }); }}>
+                  ← Précédent
+                </button>
+                <span className="page-info">{page} / {totalPages}</span>
+                <button className="page-btn" disabled={page === totalPages}
+                  onClick={() => { setPage(p => p + 1); document.querySelector(".results-section")?.scrollIntoView({ behavior: "smooth" }); }}>
+                  Suivant →
+                </button>
+              </div>
+            )}
           </>
         )}
 

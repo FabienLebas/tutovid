@@ -17,6 +17,8 @@ Usage:
 import os
 import sys
 import time
+import socket
+import resource
 import platform
 import subprocess
 import signal
@@ -25,6 +27,10 @@ import tempfile
 from pathlib import Path
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+
+# Augmente la limite de fichiers ouverts pour les longues sessions Whisper + yt-dlp
+_soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+resource.setrlimit(resource.RLIMIT_NOFILE, (min(4096, _hard), _hard))
 
 from googleapiclient.discovery import build
 from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
@@ -164,36 +170,62 @@ def parse_iso_duration(duration: str) -> int:
 class NoYouTubeTranscript(Exception):
     pass
 
-def get_transcript(video_id: str, languages: list[str]) -> tuple[list[dict], str]:
+_NETWORK_ERRORS = (socket.gaierror, ConnectionError, TimeoutError, OSError)
+
+def _is_rate_limited(e: Exception) -> bool:
+    return "429" in str(e) or "Too Many Requests" in str(e)
+
+def get_transcript(video_id: str, languages: list[str],
+                   whisper_model=None) -> tuple[list[dict], str]:
     """Lève NoYouTubeTranscript si aucun sous-titre YouTube et Whisper désactivé.
+    Réessaie sur erreur réseau (DNS) ou rate limit YouTube (429) avant de propager.
     Les erreurs Whisper (ImportError, ffmpeg…) propagent librement → statut 'failed'."""
-    try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        for lang in languages:
-            try:
-                return transcript_list.find_manually_created_transcript([lang]).fetch(), "youtube_manual"
-            except Exception:
-                pass
-        for lang in languages:
-            try:
-                return transcript_list.find_generated_transcript([lang]).fetch(), "youtube_auto"
-            except Exception:
-                pass
-        for lang in languages:
-            try:
-                return transcript_list.find_transcript(
-                    [t.language_code for t in transcript_list]
-                ).translate(lang).fetch(), "youtube_auto"
-            except Exception:
-                pass
-    except (NoTranscriptFound, TranscriptsDisabled):
-        pass
+    for attempt in range(4):
+        try:
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            for lang in languages:
+                try:
+                    return transcript_list.find_manually_created_transcript([lang]).fetch(), "youtube_manual"
+                except Exception:
+                    pass
+            for lang in languages:
+                try:
+                    return transcript_list.find_generated_transcript([lang]).fetch(), "youtube_auto"
+                except Exception:
+                    pass
+            for lang in languages:
+                try:
+                    return transcript_list.find_transcript(
+                        [t.language_code for t in transcript_list]
+                    ).translate(lang).fetch(), "youtube_auto"
+                except Exception:
+                    pass
+            break  # Connecté mais aucun sous-titre trouvé
+        except (NoTranscriptFound, TranscriptsDisabled):
+            break  # Pas de sous-titres, inutile de réessayer
+        except _NETWORK_ERRORS as e:
+            if attempt < 3:
+                time.sleep(2 ** attempt + 1)
+                continue
+            raise
+        except Exception as e:
+            if _is_rate_limited(e):
+                if attempt < 2:
+                    wait = 5 * (2 ** attempt)  # 5s puis 10s
+                    time.sleep(wait)
+                    continue
+                # Toujours bloqué après 3 tentatives : on passe définitivement
+                raise NoYouTubeTranscript(video_id)
+            raise
 
     if os.getenv("USE_WHISPER_FALLBACK", "false").lower() == "true":
-        model = os.getenv("WHISPER_MODEL", "small")
-        click.echo(f"  🎙️  Whisper ({model}) — transcription locale de {video_id}…")
+        model_name = os.getenv("WHISPER_MODEL", "small")
+        # On passe la première langue configurée pour éviter l'auto-détection de Whisper
+        whisper_lang = languages[0] if languages else None
+        click.echo(f"  🎙️  Whisper ({model_name}) — transcription locale de {video_id}…")
         try:
-            return transcribe_with_whisper(video_id), "whisper"
+            return transcribe_with_whisper(video_id, language=whisper_lang,
+                                           whisper_model=whisper_model), "whisper"
         except Exception as e:
             # Vidéo non disponible : première, live, privée, supprimée → pas la peine de réessayer
             unavailable = ("Premieres in", "This live stream", "Private video",
@@ -204,9 +236,19 @@ def get_transcript(video_id: str, languages: list[str]) -> tuple[list[dict], str
 
     raise NoYouTubeTranscript(video_id)
 
-def transcribe_with_whisper(video_id: str) -> list[dict]:
+def load_whisper_model():
+    import whisper
+    import warnings
+    model_name = os.getenv("WHISPER_MODEL", "small")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # supprime le warning FP16 au chargement
+        return whisper.load_model(model_name), model_name
+
+def transcribe_with_whisper(video_id: str, language: str | None = None,
+                             whisper_model=None) -> list[dict]:
     import yt_dlp
     import whisper
+    import warnings
     model_name = os.getenv("WHISPER_MODEL", "small")
     with tempfile.TemporaryDirectory() as tmp:
         audio_path = Path(tmp) / "audio.mp3"
@@ -215,9 +257,14 @@ def transcribe_with_whisper(video_id: str) -> list[dict]:
             "outtmpl": str(audio_path.with_suffix("")),
             "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3"}],
             "quiet": True,
+            "no_warnings": True,
         }).download([f"https://www.youtube.com/watch?v={video_id}"])
-        model = whisper.load_model(model_name)
-        result = model.transcribe(str(audio_path), verbose=False)
+        model = whisper_model or whisper.load_model(model_name)
+        # Forcer la langue évite la détection automatique sur les intros musicales
+        # qui cause des détections aberrantes ("Latin") et bloque la transcription
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # supprime le warning FP16 à la transcription
+            result = model.transcribe(str(audio_path), verbose=False, language=language)
     return [{"text": seg["text"], "start": seg["start"], "duration": seg["end"] - seg["start"]}
             for seg in result["segments"]]
 
@@ -358,7 +405,8 @@ def get_videos_to_index(sb: Client, video_ids: list[str], force: bool) -> list[s
 # ── Pipeline vidéo (cœur du traitement) ─────────────────────────────────────
 
 def process_video(sb, yt_client, openai_client, video, ch, sport_slug,
-                  languages, chunk_size, chunk_overlap) -> str:
+                  languages, chunk_size, chunk_overlap,
+                  whisper_model=None) -> str:
     """
     Traite une vidéo complète : transcription → chunks → embeddings → Supabase.
     Retourne le statut final : 'indexed', 'no_transcript', 'failed'
@@ -366,11 +414,14 @@ def process_video(sb, yt_client, openai_client, video, ch, sport_slug,
     mark_video_indexing(sb, ch["id"], sport_slug, video)
 
     try:
-        segments, source = get_transcript(video["id"], languages)
+        segments, source = get_transcript(video["id"], languages, whisper_model=whisper_model)
     except NoYouTubeTranscript:
         upsert_video(sb, ch["id"], sport_slug, video, "none", "unknown", "no_transcript")
         return "no_transcript"
-    # Les erreurs Whisper (ImportError, ffmpeg, etc.) propagent → statut 'failed' + message visible
+    except Exception as e:
+        # Erreur réseau persistante ou Whisper → marque 'failed' pour ne pas rester bloqué en 'indexing'
+        upsert_video(sb, ch["id"], sport_slug, video, "error", "unknown", "failed")
+        raise e
 
     try:
         all_chunks = [make_title_chunk(video)] + \
@@ -481,6 +532,13 @@ def index(sport: str, channel: str, index_all: bool,
     if batch:
         click.echo(f"📦 Mode batch : traitement de {batch} vidéos maximum puis arrêt propre.")
 
+    # Charger Whisper une seule fois si le fallback est activé
+    whisper_model = None
+    if os.getenv("USE_WHISPER_FALLBACK", "false").lower() == "true":
+        click.echo(f"🎙️  Chargement du modèle Whisper ({os.getenv('WHISPER_MODEL', 'small')})…")
+        whisper_model, wname = load_whisper_model()
+        click.echo(f"✅ Modèle Whisper '{wname}' chargé (réutilisé pour toutes les vidéos)")
+
     with SleepBlocker(enabled=no_sleep):
 
         total_done = 0
@@ -531,7 +589,8 @@ def index(sport: str, channel: str, index_all: bool,
                 try:
                     result = process_video(
                         sb, yt, openai_client, video, ch, sport_slug,
-                        languages, chunk_size, chunk_overlap
+                        languages, chunk_size, chunk_overlap,
+                        whisper_model=whisper_model,
                     )
                     stats[result] = stats.get(result, 0) + 1
                 except Exception as e:
@@ -560,6 +619,8 @@ def index(sport: str, channel: str, index_all: bool,
                 break
 
         click.echo(f"\n✅ Session terminée — {total_done} vidéos traitées au total.")
+        if total_done == 0:
+            sys.exit(2)  # Code 2 = rien à faire, tout est déjà indexé
 
 @cli.command("stats")
 @click.option("--sport", default=None, help="Filtrer par sport")
