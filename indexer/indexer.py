@@ -364,8 +364,8 @@ def upsert_chunks(sb: Client, video_id: str, sport_slug: str,
             "text": chunk["text"],
             "embedding": emb,
         })
-    for i in range(0, len(rows), 50):
-        sb.table("chunks").insert(rows[i:i+50]).execute()
+    for i in range(0, len(rows), 5):
+        sb.table("chunks").insert(rows[i:i+5]).execute()
 
 def get_videos_to_index(sb: Client, video_ids: list[str], force: bool) -> list[str]:
     """
